@@ -1,0 +1,16 @@
+{
+  "_meta": { "name": "Español" },
+  "common": {
+    "save": "Guardar",
+    "cancel": "Cancelar",
+    "back": "Volver",
+    "loading": "Cargando…",
+    "points": "Puntos"
+  },
+  "auth": {
+    "login": "Iniciar sesión",
+    "register": "Crear cuenta",
+    "email": "Correo electrónico",
+    "password": "Contraseña"
+  }
+}

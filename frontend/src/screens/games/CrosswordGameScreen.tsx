@@ -14,95 +14,126 @@ import {
   View,
 } from 'react-native';
 
+import type { CrosswordData, CrosswordWord, Puzzle } from '../../api/types';
 import AppButton from '../../components/AppButton';
-import { useApp } from '../../context/AppContext';
-import { CROSSWORD_GRID, CROSSWORD_WORDS, CrosswordWord } from '../../data/mockData';
 import type { HomeStackParamList } from '../../navigation/types';
 import { colors, fontSize, radius } from '../../theme';
+import { PuzzleStatus, rewardMessage, SolveFn, usePuzzle } from './usePuzzle';
 
 type Props = NativeStackScreenProps<HomeStackParamList, 'CrosswordGame'>;
 
 type CellKey = string;
-
-const SIZE = CROSSWORD_GRID.length;
 
 const cellKey = (row: number, col: number): CellKey => `${row}-${col}`;
 
 // Compara sin distinguir mayúsculas ni tildes.
 const normalize = (text: string) => text.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
 
-// ----- Índices precalculados a partir de los datos fijos -----
-const WORD_BY_ID: Record<string, CrosswordWord> = Object.fromEntries(CROSSWORD_WORDS.map((w) => [w.id, w]));
-
-const WORD_CELLS: Record<string, CellKey[]> = Object.fromEntries(
-  CROSSWORD_WORDS.map((w) => [
-    w.id,
-    Array.from({ length: w.answer.length }, (_, i) =>
-      w.direction === 'across' ? cellKey(w.row, w.col + i) : cellKey(w.row + i, w.col),
-    ),
-  ]),
-);
-
-const CELL_WORDS: Record<CellKey, string[]> = {};
-CROSSWORD_WORDS.forEach((w) => {
-  WORD_CELLS[w.id].forEach((key) => {
-    (CELL_WORDS[key] ??= []).push(w.id);
-  });
-});
-
-const CELL_NUMBERS: Record<CellKey, number> = Object.fromEntries(
-  CROSSWORD_WORDS.map((w) => [cellKey(w.row, w.col), w.number]),
-);
-
 const directionLabel = (word: CrosswordWord) => (word.direction === 'across' ? 'Horizontal' : 'Vertical');
 
-// ===== Pantalla: Mini Crucigrama (CrosswordGameScreen) =====
-export default function CrosswordGameScreen({ navigation }: Props) {
-  const { completeGame } = useApp();
-  const { width } = useWindowDimensions();
-  const cellSize = Math.floor((Math.min(width, 480) - 40) / SIZE);
-
-  const inputRefs = useRef<Record<CellKey, TextInput | null>>({});
-  const finishedRef = useRef(false);
-
-  const [letters, setLetters] = useState<Record<CellKey, string>>({});
-  const [activeWordId, setActiveWordId] = useState(CROSSWORD_WORDS[0].id);
-  const [focusedKey, setFocusedKey] = useState<CellKey | null>(null);
-
-  const activeWord = WORD_BY_ID[activeWordId];
-  const activeCells = WORD_CELLS[activeWordId];
-
-  const isSolved = useMemo(
-    () =>
-      Object.keys(CELL_WORDS).every((key) => {
-        const [row, col] = key.split('-').map(Number);
-        return normalize(letters[key] ?? '') === CROSSWORD_GRID[row][col];
-      }),
-    [letters],
+// ----- Índices calculados a partir de los datos del juego -----
+function buildIndexes({ cells, words }: CrosswordData) {
+  const wordById: Record<string, CrosswordWord> = Object.fromEntries(words.map((w) => [w.id, w]));
+  const wordCells: Record<string, CellKey[]> = Object.fromEntries(
+    words.map((w) => [
+      w.id,
+      Array.from({ length: w.length }, (_, i) =>
+        w.direction === 'across' ? cellKey(w.row, w.col + i) : cellKey(w.row + i, w.col),
+      ),
+    ]),
   );
+  const cellWords: Record<CellKey, string[]> = {};
+  words.forEach((w) => {
+    wordCells[w.id].forEach((key) => {
+      (cellWords[key] ??= []).push(w.id);
+    });
+  });
+  const cellNumbers: Record<CellKey, number> = Object.fromEntries(words.map((w) => [cellKey(w.row, w.col), w.number]));
+  const grid = cells.map((row) => row.split('').map((c) => c === '#'));
+  return { wordById, wordCells, cellWords, cellNumbers, grid };
+}
+
+// ===== Pantalla: Mini Crucigrama (CrosswordGameScreen) =====
+export default function CrosswordGameScreen({ navigation, route }: Props) {
+  const { puzzle, error, reload, solve } = usePuzzle<CrosswordData>(route.params.puzzleId);
 
   useEffect(() => {
-    if (!isSolved || finishedRef.current) return;
-    finishedRef.current = true;
+    if (puzzle) navigation.setOptions({ title: puzzle.title });
+  }, [navigation, puzzle]);
+
+  if (!puzzle) return <PuzzleStatus error={error} onRetry={reload} />;
+  return <CrosswordGame puzzle={puzzle} solve={solve} onDone={() => navigation.goBack()} />;
+}
+
+type GameProps = {
+  puzzle: Puzzle<CrosswordData>;
+  solve: SolveFn;
+  onDone: () => void;
+};
+
+function CrosswordGame({ puzzle, solve, onDone }: GameProps) {
+  const { words } = puzzle.data;
+  const { wordById, wordCells, cellWords, cellNumbers, grid } = useMemo(() => buildIndexes(puzzle.data), [puzzle]);
+  const size = grid.length;
+
+  const { width } = useWindowDimensions();
+  const cellSize = Math.floor((Math.min(width, 480) - 40) / size);
+
+  const inputRefs = useRef<Record<CellKey, TextInput | null>>({});
+  // Última respuesta enviada, para no reenviar la misma combinación de letras.
+  const submittedRef = useRef<string | null>(null);
+
+  const [letters, setLetters] = useState<Record<CellKey, string>>({});
+  const [activeWordId, setActiveWordId] = useState(words[0].id);
+  const [focusedKey, setFocusedKey] = useState<CellKey | null>(null);
+
+  const activeWord = wordById[activeWordId];
+  const activeCells = wordCells[activeWordId];
+
+  // Cuando todas las casillas tienen letra, se arma la respuesta { idPalabra: "PALABRA" }.
+  const answer = useMemo(() => {
+    const filled = Object.keys(cellWords).every((key) => letters[key]);
+    if (!filled) return null;
+    return Object.fromEntries(
+      words.map((w) => [w.id, wordCells[w.id].map((key) => normalize(letters[key])).join('')]),
+    );
+  }, [letters, words, wordCells, cellWords]);
+
+  useEffect(() => {
+    if (!answer) return;
+    const serialized = JSON.stringify(answer);
+    if (submittedRef.current === serialized) return;
+    submittedRef.current = serialized;
     Keyboard.dismiss();
-    completeGame('crossword');
-    Alert.alert('¡Crucigrama completado!', 'Excelente memoria. Ganaste 5 puntos.', [
-      { text: 'Continuar', onPress: () => navigation.goBack() },
-    ], { cancelable: false });
-  }, [isSolved, completeGame, navigation]);
+
+    solve(answer)
+      .then((result) => {
+        if (!result.correct) {
+          Alert.alert('Revisa tus palabras', 'Algunas palabras no son correctas. ¡Inténtalo de nuevo!');
+          return;
+        }
+        Alert.alert('¡Crucigrama completado!', `Excelente memoria. ${rewardMessage(result)}`, [
+          { text: 'Continuar', onPress: onDone },
+        ], { cancelable: false });
+      })
+      .catch((e) => {
+        submittedRef.current = null;
+        Alert.alert('No se pudo enviar tu respuesta', e instanceof Error ? e.message : '');
+      });
+  }, [answer, solve, onDone]);
 
   const focusCell = (key: CellKey) => inputRefs.current[key]?.focus();
 
   const handleFocus = (key: CellKey) => {
     setFocusedKey(key);
-    if (!activeCells.includes(key)) setActiveWordId(CELL_WORDS[key][0]);
+    if (!activeCells.includes(key)) setActiveWordId(cellWords[key][0]);
   };
 
   // Tocar de nuevo una celda de cruce alterna entre horizontal y vertical.
   const handlePressIn = (key: CellKey) => {
-    const words = CELL_WORDS[key];
-    if (focusedKey === key && words.length > 1) {
-      setActiveWordId(words.find((id) => id !== activeWordId) ?? activeWordId);
+    const ids = cellWords[key];
+    if (focusedKey === key && ids.length > 1) {
+      setActiveWordId(ids.find((id) => id !== activeWordId) ?? activeWordId);
     }
   };
 
@@ -128,7 +159,7 @@ export default function CrosswordGameScreen({ navigation }: Props) {
 
   const selectWord = (word: CrosswordWord) => {
     setActiveWordId(word.id);
-    const cells = WORD_CELLS[word.id];
+    const cells = wordCells[word.id];
     focusCell(cells.find((key) => !letters[key]) ?? cells[0]);
   };
 
@@ -141,18 +172,18 @@ export default function CrosswordGameScreen({ navigation }: Props) {
       {/* ----- Pista activa ----- */}
       <View style={styles.clueBox}>
         <Text style={styles.clueLabel}>
-          {activeWord.number} · {directionLabel(activeWord)} · {activeWord.answer.length} letras
+          {activeWord.number} · {directionLabel(activeWord)} · {activeWord.length} letras
         </Text>
         <Text style={styles.clueText}>{activeWord.clue}</Text>
       </View>
 
       {/* ----- Cuadrícula ----- */}
       <View style={styles.grid}>
-        {CROSSWORD_GRID.map((rowLetters, row) => (
+        {grid.map((rowCells, row) => (
           <View key={row} style={styles.row}>
-            {rowLetters.map((solution, col) => {
+            {rowCells.map((isCell, col) => {
               const key = cellKey(row, col);
-              if (solution === null) {
+              if (!isCell) {
                 return <View key={key} style={{ width: cellSize, height: cellSize }} />;
               }
               const inActiveWord = activeCells.includes(key);
@@ -167,7 +198,7 @@ export default function CrosswordGameScreen({ navigation }: Props) {
                     isFocused && styles.cellFocused,
                   ]}
                 >
-                  {CELL_NUMBERS[key] ? <Text style={styles.cellNumber}>{CELL_NUMBERS[key]}</Text> : null}
+                  {cellNumbers[key] ? <Text style={styles.cellNumber}>{cellNumbers[key]}</Text> : null}
                   <TextInput
                     ref={(ref) => {
                       inputRefs.current[key] = ref;
@@ -195,7 +226,7 @@ export default function CrosswordGameScreen({ navigation }: Props) {
 
       {/* ----- Lista de pistas ----- */}
       <Text style={styles.sectionTitle}>Pistas</Text>
-      {CROSSWORD_WORDS.map((word) => (
+      {words.map((word) => (
         <Pressable
           key={word.id}
           onPress={() => selectWord(word)}
@@ -210,7 +241,7 @@ export default function CrosswordGameScreen({ navigation }: Props) {
         </Pressable>
       ))}
 
-      <AppButton label="Volver" variant="primary" style={styles.backButton} onPress={() => navigation.goBack()} />
+      <AppButton label="Volver" variant="primary" style={styles.backButton} onPress={onDone} />
     </ScrollView>
   );
 }

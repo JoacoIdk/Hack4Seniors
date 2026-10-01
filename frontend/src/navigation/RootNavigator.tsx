@@ -3,8 +3,11 @@ import { createMaterialTopTabNavigator } from '@react-navigation/material-top-ta
 import { getFocusedRouteNameFromRoute } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import React from 'react';
+import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useApp } from '../context/AppContext';
+import AuthScreen from '../screens/AuthScreen';
 import ExploreScreen from '../screens/ExploreScreen';
 import ChessGameScreen from '../screens/games/ChessGameScreen';
 import CrosswordGameScreen from '../screens/games/CrosswordGameScreen';
@@ -41,8 +44,21 @@ function HomeStackNavigator() {
 }
 // ===== Fin HomeStackNavigator =====
 
-// ===== Navegación principal: pestañas inferiores con deslizamiento =====
+// ===== Navegación principal: sesión -> pestañas inferiores con deslizamiento =====
 export default function RootNavigator() {
+  const { status } = useApp();
+
+  if (status === 'loading') {
+    return (
+      <View style={styles.loading}>
+        <ActivityIndicator size="large" color={colors.primary} />
+      </View>
+    );
+  }
+  return status === 'signedIn' ? <MainTabs /> : <AuthScreen />;
+}
+
+function MainTabs() {
   const insets = useSafeAreaInsets();
 
   return (
@@ -108,3 +124,12 @@ export default function RootNavigator() {
   );
 }
 // ===== Fin RootNavigator =====
+
+const styles = StyleSheet.create({
+  loading: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.background,
+  },
+});

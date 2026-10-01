@@ -5,34 +5,51 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Modal, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import Chessboard, { ChessboardRef } from 'react-native-chessboard';
 
+import type { ChessData, ChessMove, Puzzle } from '../../api/types';
 import AppButton from '../../components/AppButton';
-import { useApp } from '../../context/AppContext';
-import { CHESS_PUZZLE, ChessMove } from '../../data/mockData';
 import type { HomeStackParamList } from '../../navigation/types';
 import { colors, fontSize, radius, shadow } from '../../theme';
+import { PuzzleStatus, rewardMessage, SolveFn, usePuzzle } from './usePuzzle';
 
 type Props = NativeStackScreenProps<HomeStackParamList, 'ChessGame'>;
 
 type BoardMove = Parameters<ChessboardRef['move']>[0];
 
-const INITIAL_MESSAGE = 'Juegan las blancas. Da jaque mate en 3 jugadas.';
+const DEFAULT_MESSAGE = 'Juegan las blancas. Da jaque mate.';
 const REPLY_DELAY = 600;
 
 // ===== Pantalla: Desafío Ajedrez (ChessGameScreen) =====
-export default function ChessGameScreen({ navigation }: Props) {
-  const { completeGame } = useApp();
+export default function ChessGameScreen({ navigation, route }: Props) {
+  const { puzzle, error, reload, solve } = usePuzzle<ChessData>(route.params.puzzleId);
+
+  useEffect(() => {
+    if (puzzle) navigation.setOptions({ title: puzzle.title });
+  }, [navigation, puzzle]);
+
+  if (!puzzle) return <PuzzleStatus error={error} onRetry={reload} />;
+  return <ChessGame puzzle={puzzle} solve={solve} onDone={() => navigation.goBack()} />;
+}
+
+type GameProps = {
+  puzzle: Puzzle<ChessData>;
+  solve: SolveFn;
+  onDone: () => void;
+};
+
+function ChessGame({ puzzle, solve, onDone }: GameProps) {
+  const { fen, line, prompt = DEFAULT_MESSAGE, notation, explanation } = puzzle.data;
   const { width } = useWindowDimensions();
   const boardSize = Math.min(width - 40, 420);
 
   const boardRef = useRef<ChessboardRef>(null);
   // Copia propia de la partida para validar jugadas con chess.js.
-  const gameRef = useRef(new Chess(CHESS_PUZZLE.fen));
+  const gameRef = useRef(new Chess(fen));
   // Índice de la próxima jugada del usuario dentro de la solución.
   const stepRef = useRef(0);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState(INITIAL_MESSAGE);
+  const [message, setMessage] = useState(prompt);
   const [showExplanation, setShowExplanation] = useState(false);
 
   const clearPending = () => {
@@ -43,21 +60,39 @@ export default function ChessGameScreen({ navigation }: Props) {
   // Evita que una respuesta pendiente de las negras se ejecute tras salir.
   useEffect(() => () => clearPending(), []);
 
-  const resetAttempt = () => {
+  const resetAttempt = useCallback(() => {
     clearPending();
-    gameRef.current = new Chess(CHESS_PUZZLE.fen);
+    gameRef.current = new Chess(fen);
     stepRef.current = 0;
-    boardRef.current?.resetBoard(CHESS_PUZZLE.fen);
-    setMessage(INITIAL_MESSAGE);
+    boardRef.current?.resetBoard(fen);
+    setMessage(prompt);
     setBusy(false);
-  };
+  }, [fen, prompt]);
 
-  const finishGame = useCallback(() => {
-    completeGame('chess');
-    Alert.alert('¡Jaque mate!', 'Resolviste el desafío y ganaste 5 puntos.', [
-      { text: 'Continuar', onPress: () => navigation.goBack() },
-    ], { cancelable: false });
-  }, [completeGame, navigation]);
+  // El backend valida las jugadas de las blancas (en notación SAN) y otorga los puntos.
+  const finishGame = useCallback(async () => {
+    const whiteMoves = gameRef.current
+      .history({ verbose: true })
+      .filter((m) => m.color === 'w')
+      .map((m) => m.san);
+    try {
+      const result = await solve(whiteMoves);
+      if (!result.correct) {
+        Alert.alert('Casi', 'Es jaque mate, pero no es la solución del desafío. ¡Inténtalo de nuevo!', [
+          { text: 'Reintentar', onPress: resetAttempt },
+        ]);
+        return;
+      }
+      Alert.alert('¡Jaque mate!', `Resolviste el desafío. ${rewardMessage(result)}`, [
+        { text: 'Continuar', onPress: onDone },
+      ], { cancelable: false });
+    } catch (e) {
+      Alert.alert('No se pudo enviar tu respuesta', e instanceof Error ? e.message : '', [
+        { text: 'Reintentar', onPress: () => void finishGame() },
+        { text: 'Cancelar', style: 'cancel', onPress: resetAttempt },
+      ]);
+    }
+  }, [solve, onDone, resetAttempt]);
 
   const handleMove = useCallback(
     ({ move }: { move: { from: string; to: string; color: string } }) => {
@@ -74,12 +109,12 @@ export default function ChessGameScreen({ navigation }: Props) {
       if (game.isCheckmate()) {
         setBusy(true);
         setMessage('¡Jaque mate! ¡Excelente!');
-        finishGame();
+        void finishGame();
         return;
       }
 
-      const expected = CHESS_PUZZLE.solution[stepRef.current];
-      if (move.from !== expected.from || move.to !== expected.to) {
+      const expected = line[stepRef.current];
+      if (!expected || move.from !== expected.from || move.to !== expected.to) {
         game.undo();
         setBusy(true);
         setMessage('Esa no es la jugada. ¡Inténtalo de nuevo!');
@@ -90,8 +125,9 @@ export default function ChessGameScreen({ navigation }: Props) {
         return;
       }
 
-      const reply: ChessMove = CHESS_PUZZLE.solution[stepRef.current + 1];
+      const reply: ChessMove | undefined = line[stepRef.current + 1];
       stepRef.current += 2;
+      if (!reply) return;
       setBusy(true);
       setMessage('¡Bien jugado! Ahora mueven las negras...');
       timeoutRef.current = setTimeout(async () => {
@@ -101,7 +137,7 @@ export default function ChessGameScreen({ navigation }: Props) {
         setMessage('Tu turno. ¡Sigue buscando el mate!');
       }, REPLY_DELAY);
     },
-    [finishGame],
+    [finishGame, line],
   );
 
   return (
@@ -114,7 +150,7 @@ export default function ChessGameScreen({ navigation }: Props) {
       <View style={[styles.boardWrapper, { width: boardSize, height: boardSize }]}>
         <Chessboard
           ref={boardRef}
-          fen={CHESS_PUZZLE.fen}
+          fen={fen}
           boardSize={boardSize}
           gestureEnabled={!busy}
           onMove={handleMove}
@@ -128,13 +164,15 @@ export default function ChessGameScreen({ navigation }: Props) {
           icon={<Ionicons name="refresh" size={22} color={colors.white} />}
           onPress={resetAttempt}
         />
-        <AppButton
-          label="Explicación"
-          variant="outline"
-          icon={<Ionicons name="bulb-outline" size={22} color={colors.accentDark} />}
-          onPress={() => setShowExplanation(true)}
-        />
-        <AppButton label="Volver" variant="primary" onPress={() => navigation.goBack()} />
+        {explanation ? (
+          <AppButton
+            label="Explicación"
+            variant="outline"
+            icon={<Ionicons name="bulb-outline" size={22} color={colors.accentDark} />}
+            onPress={() => setShowExplanation(true)}
+          />
+        ) : null}
+        <AppButton label="Volver" variant="primary" onPress={onDone} />
       </View>
 
       <Modal
@@ -146,8 +184,8 @@ export default function ChessGameScreen({ navigation }: Props) {
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Explicación</Text>
-            <Text style={styles.modalSolution}>1. Ta6+ Re7  2. Tb7+ Rd8  3. Ta8#</Text>
-            <Text style={styles.modalText}>{CHESS_PUZZLE.explanation}</Text>
+            {notation ? <Text style={styles.modalSolution}>{notation}</Text> : null}
+            <Text style={styles.modalText}>{explanation}</Text>
             <AppButton label="Entendido" variant="primary" onPress={() => setShowExplanation(false)} />
           </View>
         </View>

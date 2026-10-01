@@ -1,24 +1,18 @@
 import { FontAwesome5, Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import React, { useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { api } from '../api/client';
+import type { Mission, MissionClaimOut } from '../api/types';
 import AppButton from '../components/AppButton';
 import ScreenBanner from '../components/ScreenBanner';
 import { useApp } from '../context/AppContext';
-import { CHALLENGE_PLACES, CHALLENGES, ChallengeKind } from '../data/mockData';
 import type { HomeStackParamList } from '../navigation/types';
 import { colors, fontSize, radius, shadow } from '../theme';
 
 type Props = NativeStackScreenProps<HomeStackParamList, 'Home'>;
-
-type Challenge = {
-  kind: ChallengeKind;
-  text: string;
-  points: number;
-};
-
-const pick = <T,>(items: readonly T[]): T => items[Math.floor(Math.random() * items.length)];
 
 const getGreeting = () => {
   const hour = new Date().getHours();
@@ -29,30 +23,47 @@ const getGreeting = () => {
 
 // ===== Pantalla: Inicio (HomeScreen) =====
 export default function HomeScreen({ navigation }: Props) {
-  const { points, addPoints, completedCount, totalGames } = useApp();
-  const [challenge, setChallenge] = useState<Challenge | null>(null);
+  const { me, points, refreshPoints, refreshPuzzles, completedCount, totalGames } = useApp();
+  const [missions, setMissions] = useState<Mission[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [claiming, setClaiming] = useState<number | null>(null);
 
-  const generateChallenge = (kind: ChallengeKind) => {
-    const config = CHALLENGES[kind];
-    setChallenge({
-      kind,
-      points: config.points,
-      text: `Ve a ${pick(CHALLENGE_PLACES)} y ${pick(config.actions)}.`,
-    });
-  };
+  const loadMissions = useCallback(async () => {
+    try {
+      setMissions(await api<Mission[]>('/missions'));
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'No se pudieron cargar los desafíos.');
+    }
+  }, []);
 
-  const markDone = () => {
-    if (!challenge) return;
-    addPoints(challenge.points);
-    Alert.alert('¡Muy bien!', `Completaste el desafío y ganaste ${challenge.points} puntos.`);
-    setChallenge(null);
+  // El progreso de las misiones cambia al jugar o hacer amigos: se recarga al volver.
+  useFocusEffect(
+    useCallback(() => {
+      void loadMissions();
+      refreshPoints().catch(() => undefined);
+      refreshPuzzles().catch(() => undefined);
+    }, [loadMissions, refreshPoints, refreshPuzzles]),
+  );
+
+  const claim = async (mission: Mission) => {
+    setClaiming(mission.id);
+    try {
+      const result = await api<MissionClaimOut>(`/missions/${mission.id}/claim`, { method: 'POST' });
+      Alert.alert('¡Muy bien!', `Completaste "${mission.title}" y ganaste ${result.points_awarded} puntos.`);
+      await Promise.all([loadMissions(), refreshPoints()]);
+    } catch (e) {
+      Alert.alert('No se pudo reclamar', e instanceof Error ? e.message : '');
+    } finally {
+      setClaiming(null);
+    }
   };
 
   return (
     <View style={styles.container}>
       <ScreenBanner
         title={getGreeting()}
-        subtitle="¿Qué te gustaría hacer hoy?"
+        subtitle={me ? `Hola, ${me.display_name.split(' ')[0]}. ¿Qué te gustaría hacer hoy?` : '¿Qué te gustaría hacer hoy?'}
         right={
           <View style={styles.pointsPill}>
             <FontAwesome5 name="coins" size={16} color={colors.primaryDark} />
@@ -62,44 +73,46 @@ export default function HomeScreen({ navigation }: Props) {
       />
 
       <ScrollView contentContainerStyle={styles.content}>
-        {/* ----- Desafíos ----- */}
+        {/* ----- Desafíos (misiones del día) ----- */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Desafíos del día</Text>
 
-          {challenge ? (
+          {error ? (
             <>
-              <View style={styles.challengeBox}>
-                <Text style={styles.challengeTag}>
-                  {challenge.kind === 'hard' ? 'Desafiante' : 'Simple'} · +{challenge.points} puntos
-                </Text>
-                <Text style={styles.challengeText}>{challenge.text}</Text>
-              </View>
-              <AppButton
-                label="Marcar listo"
-                variant="primary"
-                icon={<Ionicons name="checkmark-circle" size={24} color={colors.white} />}
-                onPress={markDone}
-              />
-              <Pressable onPress={() => setChallenge(null)} style={styles.cancel} accessibilityRole="button">
-                <Text style={styles.cancelText}>Cancelar</Text>
-              </Pressable>
+              <Text style={styles.hint}>{error}</Text>
+              <AppButton label="Reintentar" variant="outline" onPress={loadMissions} />
             </>
+          ) : missions === null ? (
+            <ActivityIndicator size="large" color={colors.accent} />
+          ) : missions.length === 0 ? (
+            <Text style={styles.hint}>Hoy no hay desafíos. ¡Vuelve mañana!</Text>
           ) : (
-            <>
-              <AppButton
-                label="Quiero algo desafiante"
-                icon={<Ionicons name="flame" size={22} color={colors.white} />}
-                onPress={() => generateChallenge('hard')}
-              />
-              <Text style={styles.hint}>Gana {CHALLENGES.hard.points} puntos</Text>
-              <AppButton
-                label="Dame algo simple"
-                variant="outline"
-                icon={<Ionicons name="leaf" size={22} color={colors.accentDark} />}
-                onPress={() => generateChallenge('easy')}
-              />
-              <Text style={styles.hint}>Gana {CHALLENGES.easy.points} puntos</Text>
-            </>
+            missions.map((mission) => (
+              <View key={mission.id} style={[styles.challengeBox, mission.claimed && styles.challengeDone]}>
+                <Text style={styles.challengeTag}>
+                  +{mission.points} puntos · {mission.progress}/{mission.target}
+                </Text>
+                <Text style={styles.challengeText}>{mission.title}</Text>
+                {mission.description ? <Text style={styles.challengeDescription}>{mission.description}</Text> : null}
+                <View style={styles.progressTrackDark}>
+                  <View
+                    style={[styles.progressFillDark, { width: `${(mission.progress / mission.target) * 100}%` as const }]}
+                  />
+                </View>
+                {mission.claimed ? (
+                  <Text style={styles.claimedText}>✔️ Reclamado</Text>
+                ) : mission.completed ? (
+                  <AppButton
+                    label={claiming === mission.id ? 'Reclamando…' : `Reclamar ${mission.points} puntos`}
+                    variant="primary"
+                    disabled={claiming !== null}
+                    icon={<Ionicons name="checkmark-circle" size={24} color={colors.white} />}
+                    onPress={() => claim(mission)}
+                    style={styles.claimButton}
+                  />
+                ) : null}
+              </View>
+            ))
           )}
         </View>
       </ScrollView>
@@ -116,7 +129,12 @@ export default function HomeScreen({ navigation }: Props) {
           <View style={styles.gamesTexts}>
             <Text style={styles.gamesTitle}>Juegos Diarios</Text>
             <View style={styles.progressTrack}>
-              <View style={[styles.progressFill, { width: `${(completedCount / totalGames) * 100}%` as const }]} />
+              <View
+                style={[
+                  styles.progressFill,
+                  { width: `${totalGames ? (completedCount / totalGames) * 100 : 0}%` as const },
+                ]}
+              />
             </View>
           </View>
           <Text style={styles.gamesCounter}>
@@ -189,15 +207,33 @@ const styles = StyleSheet.create({
     color: colors.text,
     lineHeight: 30,
   },
-  cancel: {
-    alignSelf: 'center',
-    padding: 12,
-    marginTop: 4,
+  challengeDone: {
+    backgroundColor: colors.surface,
   },
-  cancelText: {
+  challengeDescription: {
     fontSize: fontSize.body,
     color: colors.textSecondary,
-    textDecorationLine: 'underline',
+    marginTop: 4,
+  },
+  progressTrackDark: {
+    height: 8,
+    borderRadius: radius.round,
+    backgroundColor: colors.border,
+    overflow: 'hidden',
+    marginTop: 12,
+  },
+  progressFillDark: {
+    height: '100%',
+    backgroundColor: colors.accent,
+  },
+  claimedText: {
+    fontSize: fontSize.body,
+    fontWeight: '700',
+    color: colors.primaryDark,
+    marginTop: 12,
+  },
+  claimButton: {
+    marginTop: 14,
   },
   footer: {
     padding: 20,

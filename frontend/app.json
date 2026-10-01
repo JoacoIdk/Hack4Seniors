@@ -23,6 +23,12 @@
         {
           "locationWhenInUsePermission": "Usamos tu ubicación para mostrarte lugares cercanos en el mapa."
         }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Usamos la cámara para leer el código QR de tus amigos."
+        }
       ]
     ]
   }

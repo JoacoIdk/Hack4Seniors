@@ -1,18 +1,36 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import React from 'react';
+import React, { useCallback } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import type { PuzzleKind } from '../../api/types';
 import { useApp } from '../../context/AppContext';
-import { DAILY_GAMES } from '../../data/mockData';
 import type { HomeStackParamList } from '../../navigation/types';
 import { colors, fontSize, radius, shadow } from '../../theme';
 
 type Props = NativeStackScreenProps<HomeStackParamList, 'GameSelection'>;
 
+// Cómo se muestra cada tipo de juego del backend. Sin ruta = aún no se puede jugar en la app.
+const GAME_KINDS: Partial<
+  Record<PuzzleKind, { icon: keyof typeof Ionicons.glyphMap; route?: 'ChessGame' | 'CrosswordGame' }>
+> = {
+  chess: { icon: 'extension-puzzle-outline', route: 'ChessGame' },
+  crossword: { icon: 'grid-outline', route: 'CrosswordGame' },
+};
+
+const DEFAULT_KIND = { icon: 'images-outline' as const, route: undefined };
+
 // ===== Pantalla: Selección de Juegos (GameSelectionScreen) =====
 export default function GameSelectionScreen({ navigation }: Props) {
-  const { games, completedCount, totalGames } = useApp();
+  const { puzzles, completedCount, totalGames, puzzlePointsRemaining, refreshPuzzles, refreshPoints } = useApp();
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshPuzzles().catch(() => undefined);
+      refreshPoints().catch(() => undefined);
+    }, [refreshPuzzles, refreshPoints]),
+  );
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -21,27 +39,36 @@ export default function GameSelectionScreen({ navigation }: Props) {
         <Text style={styles.counterValue}>
           {completedCount}/{totalGames}
         </Text>
-        <Text style={styles.counterHint}>Cada juego te da 5 puntos la primera vez</Text>
+        <Text style={styles.counterHint}>
+          {puzzlePointsRemaining > 0
+            ? `Cada juego te da 5 puntos la primera vez (te quedan ${puzzlePointsRemaining} hoy)`
+            : 'Ya ganaste todos los puntos de juegos de hoy'}
+        </Text>
       </View>
 
-      {DAILY_GAMES.map((game) => {
-        const done = games[game.id];
+      {puzzles.length === 0 ? <Text style={styles.empty}>Hoy no hay juegos. ¡Vuelve mañana!</Text> : null}
+
+      {puzzles.map((puzzle) => {
+        const done = puzzle.solved;
+        const { icon, route } = GAME_KINDS[puzzle.kind] ?? DEFAULT_KIND;
         return (
           <Pressable
-            key={game.id}
+            key={puzzle.id}
             accessibilityRole="button"
             accessibilityState={{ disabled: done }}
-            accessibilityLabel={`${game.title}${done ? ', completado' : ''}`}
-            disabled={done || !game.route}
-            onPress={() => game.route && navigation.navigate(game.route)}
+            accessibilityLabel={`${puzzle.title}${done ? ', completado' : ''}`}
+            disabled={done || !route}
+            onPress={() => route && navigation.navigate(route, { puzzleId: puzzle.id })}
             style={({ pressed }) => [styles.gameButton, done && styles.gameDone, pressed && styles.pressed]}
           >
             <View style={[styles.iconCircle, done && styles.iconCircleDone]}>
-              <Ionicons name={game.icon} size={30} color={done ? colors.textSecondary : colors.white} />
+              <Ionicons name={icon} size={30} color={done ? colors.textSecondary : colors.white} />
             </View>
             <View style={styles.gameTexts}>
-              <Text style={[styles.gameTitle, done && styles.textDone]}>{game.title}</Text>
-              <Text style={styles.gameDescription}>{done ? 'Completado hoy' : game.description}</Text>
+              <Text style={[styles.gameTitle, done && styles.textDone]}>{puzzle.title}</Text>
+              <Text style={styles.gameDescription}>
+                {done ? 'Completado hoy' : route ? puzzle.description : 'Próximamente en la app'}
+              </Text>
             </View>
             {done ? (
               <Text style={styles.check}>✔️</Text>
@@ -83,6 +110,11 @@ const styles = StyleSheet.create({
   },
   counterHint: {
     fontSize: fontSize.small,
+    color: colors.textSecondary,
+    textAlign: 'center',
+  },
+  empty: {
+    fontSize: fontSize.body,
     color: colors.textSecondary,
     textAlign: 'center',
   },

@@ -3,8 +3,8 @@ import type { NavigatorScreenParams } from '@react-navigation/native';
 export type HomeStackParamList = {
   Home: undefined;
   GameSelection: undefined;
-  ChessGame: undefined;
-  CrosswordGame: undefined;
+  ChessGame: { puzzleId: number };
+  CrosswordGame: { puzzleId: number };
 };
 
 export type TabParamList = {
