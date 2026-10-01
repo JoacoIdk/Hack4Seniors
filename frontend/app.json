@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "Hack4Seniors",
+    "slug": "hack4seniors",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#FFFFFF",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "edgeToEdgeEnabled": true,
+      "config": {
+        "googleMaps": {
+          "apiKey": "TU_API_KEY_DE_GOOGLE_MAPS"
+        }
+      }
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Usamos tu ubicación para mostrarte lugares cercanos en el mapa."
+        }
+      ]
+    ]
+  }
+}
